@@ -20,7 +20,7 @@ exports.Spiderette = class Spiderette {
     console.log(`${chalk.yellow('Host:')}       ${host}`);
     console.log(`${chalk.yellow('Start Path:')} ${pathname}`);
 
-    this.runInternalURL(urlInfo, null, []).then((ok) => {
+    this.analyzeURL(urlInfo, null, [], true).then((ok) => {
       process.exit(ok ? 0 : 1);
     });
   }
@@ -31,9 +31,10 @@ exports.Spiderette = class Spiderette {
    * @param {{ href: string, host: string, pathname: string }} href
    * @param {string|null} from
    * @param {string[]} resolvedPaths
+   * @param {boolean} loadChildren
    * @return {Promise<boolean>}
    */
-  runInternalURL(href, from, resolvedPaths) {
+  analyzeURL(href, from, resolvedPaths, loadChildren) {
     if (resolvedPaths.indexOf(href.href) >= 0) return Promise.resolve(true);
     resolvedPaths.push(href.href);
 
@@ -41,18 +42,21 @@ exports.Spiderette = class Spiderette {
       .then((resp) => {
         const statusCode = resp.statusCode;
 
-        // is redirect
+        // Perform and log the redirect
         if (statusCode >= 300 && statusCode < 400) {
-          console.log(`${chalk.bgYellow.black(statusCode)} ${href.pathname} ${chalk.gray(`(from ${from})`)}`);
+          console.log(`${chalk.bgYellow.black(statusCode)} ${href.href} ${chalk.gray(`(from ${from})`)}`);
           const next = url.parse(url.resolve(href.href, resp.headers.location));
-          return this.runInternalURL(next, from, resolvedPaths);
+          return this.analyzeURL(next, from, resolvedPaths);
         }
 
-        // is error
+        // Log the error
         if (statusCode >= 400) {
-          console.log(`${chalk.bgRed.white(statusCode)} ${href.pathname} ${chalk.gray(`(from ${from})`)}`);
+          console.log(`${chalk.bgRed.white(statusCode)} ${href.href} ${chalk.gray(`(from ${from})`)}`);
           return false;
         }
+
+        // Stop here if no children should be loaded
+        if (!loadChildren) return true;
 
         const dom = new JSDOM(resp.body);
         const anchors = dom.window.document.querySelectorAll('a[href]');
@@ -60,56 +64,18 @@ exports.Spiderette = class Spiderette {
         const p = [];
         for (const anchor of anchors) {
           const next = url.parse(url.resolve(href.href, anchor.href));
+          // Not an HTTP resource?
           if (next.protocol === null || !next.protocol.match(/^https?:$/)) continue;
 
-          if (next.host === href.host) {
-            p.push(this.runInternalURL(next, href.pathname, resolvedPaths));
-          } else {
-            p.push(this.runExternalURL(next, href.pathname, resolvedPaths));
-          }
+          const doLoadChildren = next.host === href.host;
+          p.push(this.analyzeURL(next, href.pathname, resolvedPaths, doLoadChildren));
         }
 
         return Promise.all(p).then(booleans => booleans.every(bool => bool));
       })
       .catch(() => {
         return true;
-      })
-  }
-
-  /**
-   * Runs the test on an external URL
-   *
-   * @param {{ href: string, host: string, pathname: string }} href
-   * @param {string|null} from
-   * @param {string[]} resolvedPaths
-   * @return {Promise<boolean>}
-   */
-  runExternalURL(href, from, resolvedPaths) {
-    if (resolvedPaths.indexOf(href.href) >= 0) return Promise.resolve(true);
-    resolvedPaths.push(href.href);
-
-    return this.getResource(href)
-      .then((resp) => {
-        const statusCode = resp.statusCode;
-
-        // is redirect
-        if (statusCode >= 300 && statusCode < 400) {
-          console.log(`${chalk.bgYellow.black(statusCode)} ${href.href} ${chalk.gray(`(from ${from})`)}`);
-          const next = url.parse(url.resolve(href.href, resp.headers.location));
-          return this.runExternalURL(next, from, resolvedPaths);
-        }
-
-        // is error
-        if (statusCode >= 400) {
-          console.log(`${chalk.bgRed.white(statusCode)} ${href.href} ${chalk.gray(`(from ${from})`)}`);
-          return false;
-        }
-
-        return true;
-      })
-      .catch(() => {
-        return true;
-      })
+      });
   }
 
   /**
