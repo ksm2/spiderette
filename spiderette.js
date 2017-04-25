@@ -8,11 +8,24 @@ const cli = meow(`
 	  $ spiderette <input>
 
 	Options
-	  -h, --help  Show this help text
+	  -i, --internal         Check only internal references
+	  -R, --ignore-redirect  Don't display redirects
+	  -C, --ignore-client    Don't display client errors
+	  -S, --ignore-server    Don't display server errors
+	  -v, --verbose          Log all requests
+	  -h, --help             Show this help text
+	  -V, --version          Display the version
 `, {
   alias: {
-    h: 'help'
-  }
+    i: 'internal',
+    R: 'ignoreRedirect',
+    C: 'ignoreClient',
+    S: 'ignoreServer',
+    v: 'verbose',
+    h: 'help',
+    V: 'version'
+  },
+  boolean: ['internal', 'verbose', 'ignoreRedirect', 'ignoreClient']
 });
 
 const spiderette = new Spiderette(cli.flags);

@@ -6,7 +6,16 @@ const { JSDOM } = jsdom;
 
 exports.Spiderette = class Spiderette {
   constructor(options) {
-
+    this.options = Object.assign({
+      internal: false,
+      verbose: false,
+      ignoreRedirect: false,
+      ignoreClient: false,
+      ignoreServer: false
+    }, options);
+    this.logRedirects = !(options.ignoreRedirect || false);
+    this.logClientErrors = !(options.ignoreClient || false);
+    this.logServerErrors = !(options.ignoreServer || false);
   }
 
   /**
@@ -44,15 +53,32 @@ exports.Spiderette = class Spiderette {
 
         // Perform and log the redirect
         if (statusCode >= 300 && statusCode < 400) {
-          console.log(`${chalk.bgYellow.black(statusCode)} ${href.href} ${chalk.gray(`(from ${from})`)}`);
+          if (!this.options.ignoreRedirect) {
+            console.log(`${chalk.bgYellow.black(statusCode)} ${href.href} ${chalk.gray(`(from ${from})`)}`);
+          }
           const next = url.parse(url.resolve(href.href, resp.headers.location));
-          return this.analyzeURL(next, from, resolvedPaths);
+          return this.analyzeURL(next, from, resolvedPaths, loadChildren);
         }
 
-        // Log the error
-        if (statusCode >= 400) {
-          console.log(`${chalk.bgRed.white(statusCode)} ${href.href} ${chalk.gray(`(from ${from})`)}`);
+        // Log the client error
+        if (statusCode >= 400 && statusCode < 500) {
+          if (!this.options.ignoreClient) {
+            console.log(`${chalk.bgRed.white(statusCode)} ${href.href} ${chalk.gray(`(from ${from})`)}`);
+          }
           return false;
+        }
+
+        // Log the server error
+        if (statusCode >= 500 && statusCode < 600) {
+          if (!this.options.ignoreServer) {
+            console.log(`${chalk.bgBlack.red(statusCode)} ${href.href} ${chalk.gray(`(from ${from})`)}`);
+          }
+          return false;
+        }
+
+        // Log the success
+        if (this.options.verbose) {
+          console.log(`${chalk.bgGreen.black(statusCode)} ${href.href} ${chalk.gray(`(from ${from})`)}`);
         }
 
         // Stop here if no children should be loaded
@@ -67,8 +93,10 @@ exports.Spiderette = class Spiderette {
           // Not an HTTP resource?
           if (next.protocol === null || !next.protocol.match(/^https?:$/)) continue;
 
-          const doLoadChildren = next.host === href.host;
-          p.push(this.analyzeURL(next, href.pathname, resolvedPaths, doLoadChildren));
+          const isInternal = next.host === href.host;
+          if (isInternal || !this.options.internal) {
+            p.push(this.analyzeURL(next, href.pathname, resolvedPaths, isInternal));
+          }
         }
 
         return Promise.all(p).then(booleans => booleans.every(bool => bool));
