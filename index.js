@@ -1,6 +1,7 @@
 const url = require('url');
 const request = require('request');
 const jsdom = require('jsdom');
+const chalk = require('chalk');
 const { JSDOM } = jsdom;
 
 exports.Spiderette = class Spiderette {
@@ -15,8 +16,9 @@ exports.Spiderette = class Spiderette {
    */
   runURL(href) {
     const urlInfo = url.parse(href);
-    const { host } = urlInfo;
-    console.log(`Host: ${host}`);
+    const { host, pathname } = urlInfo;
+    console.log(`${chalk.yellow('Host:')}       ${host}`);
+    console.log(`${chalk.yellow('Start Path:')} ${pathname}`);
 
     this.runInternalURL(urlInfo, null, []).then((ok) => {
       process.exit(ok ? 0 : 1);
@@ -41,14 +43,14 @@ exports.Spiderette = class Spiderette {
 
         // is redirect
         if (statusCode >= 300 && statusCode < 400) {
-          console.log(`${statusCode} ${href.pathname} (from ${from})`);
+          console.log(`${chalk.bgYellow.black(statusCode)} ${href.pathname} ${chalk.gray(`(from ${from})`)}`);
           const next = url.parse(url.resolve(href.href, resp.headers.location));
           return this.runInternalURL(next, from, resolvedPaths);
         }
 
         // is error
         if (statusCode >= 400) {
-          console.log(`${statusCode} ${href.pathname} (from ${from})`);
+          console.log(`${chalk.bgRed.white(statusCode)} ${href.pathname} ${chalk.gray(`(from ${from})`)}`);
           return Promise.resolve(false);
         }
 
