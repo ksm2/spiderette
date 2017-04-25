@@ -1,0 +1,39 @@
+{
+  "name": "spiderette",
+  "version": "0.0.1",
+  "description": "A spider test runner for your website",
+  "main": "index.js",
+  "bin": {
+    "spiderette": "spiderette.js"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ksm2/spiderette.git"
+  },
+  "keywords": [
+    "spider",
+    "test",
+    "static",
+    "websites",
+    "testing",
+    "continuous",
+    "integration"
+  ],
+  "author": {
+    "name": "Konstantin Simon Maria Möllers",
+    "email": "ksm.moellers@gmail.com"
+  },
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/ksm2/spiderette/issues"
+  },
+  "homepage": "https://github.com/ksm2/spiderette#readme",
+  "dependencies": {
+    "jsdom": "^10.0.0",
+    "meow": "^3.7.0",
+    "request": "^2.81.0"
+  }
+}
