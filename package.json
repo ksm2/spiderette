@@ -4,7 +4,7 @@
   "description": "A spider test runner for your website",
   "main": "index.js",
   "bin": {
-    "spiderette": "spiderette.js"
+    "spiderette": "bin/spiderette.js"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
