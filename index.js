@@ -34,8 +34,8 @@ exports.Spiderette = class Spiderette {
    * @return {Promise<boolean>}
    */
   runInternalURL(href, from, resolvedPaths) {
-    if (resolvedPaths.indexOf(href.pathname) >= 0) return Promise.resolve(true);
-    resolvedPaths.push(href.pathname);
+    if (resolvedPaths.indexOf(href.href) >= 0) return Promise.resolve(true);
+    resolvedPaths.push(href.href);
 
     return this.getResource(href)
       .then((resp) => {
@@ -51,7 +51,7 @@ exports.Spiderette = class Spiderette {
         // is error
         if (statusCode >= 400) {
           console.log(`${chalk.bgRed.white(statusCode)} ${href.pathname} ${chalk.gray(`(from ${from})`)}`);
-          return Promise.resolve(false);
+          return false;
         }
 
         const dom = new JSDOM(resp.body);
@@ -64,10 +64,48 @@ exports.Spiderette = class Spiderette {
 
           if (next.host === href.host) {
             p.push(this.runInternalURL(next, href.pathname, resolvedPaths));
+          } else {
+            p.push(this.runExternalURL(next, href.pathname, resolvedPaths));
           }
         }
 
         return Promise.all(p).then(booleans => booleans.every(bool => bool));
+      })
+      .catch(() => {
+        return true;
+      })
+  }
+
+  /**
+   * Runs the test on an external URL
+   *
+   * @param {{ href: string, host: string, pathname: string }} href
+   * @param {string|null} from
+   * @param {string[]} resolvedPaths
+   * @return {Promise<boolean>}
+   */
+  runExternalURL(href, from, resolvedPaths) {
+    if (resolvedPaths.indexOf(href.href) >= 0) return Promise.resolve(true);
+    resolvedPaths.push(href.href);
+
+    return this.getResource(href)
+      .then((resp) => {
+        const statusCode = resp.statusCode;
+
+        // is redirect
+        if (statusCode >= 300 && statusCode < 400) {
+          console.log(`${chalk.bgYellow.black(statusCode)} ${href.href} ${chalk.gray(`(from ${from})`)}`);
+          const next = url.parse(url.resolve(href.href, resp.headers.location));
+          return this.runExternalURL(next, from, resolvedPaths);
+        }
+
+        // is error
+        if (statusCode >= 400) {
+          console.log(`${chalk.bgRed.white(statusCode)} ${href.href} ${chalk.gray(`(from ${from})`)}`);
+          return false;
+        }
+
+        return true;
       })
       .catch(() => {
         return true;
