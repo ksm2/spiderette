@@ -1,8 +1,7 @@
 const url = require('url');
-const request = require('request');
-const jsdom = require('jsdom');
 const chalk = require('chalk');
-const { JSDOM } = jsdom;
+const request = require('request');
+const { Page } = require('./Page');
 
 class Spiderette {
   constructor(options) {
@@ -13,6 +12,7 @@ class Spiderette {
       ignoreClient: false,
       ignoreServer: false
     }, options);
+    this.pages = new Map();
   }
 
   /**
@@ -26,91 +26,97 @@ class Spiderette {
     console.log(`${chalk.yellow('Host:')}       ${host}`);
     console.log(`${chalk.yellow('Start Path:')} ${pathname}`);
 
-    this.analyzeURL(urlInfo, null, [], true).then((ok) => {
-      process.exit(ok ? 0 : 1);
-    });
+    return this.loadPage(urlInfo)
+      .then((page) => {
+        return this.analyzePage(page, null, [], true);
+      })
+      .then((ok) => {
+        process.exit(ok ? 0 : 1);
+      });
   }
 
   /**
    * Runs the test on an URL
    *
-   * @param {{ href: string, host: string, pathname: string }} href
-   * @param {string|null} from
+   * @param {Page} page
+   * @param {string|null} fromUrl
    * @param {string[]} resolvedPaths
    * @param {boolean} loadChildren
    * @return {Promise<boolean>}
    */
-  analyzeURL(href, from, resolvedPaths, loadChildren) {
-    if (resolvedPaths.indexOf(href.href) >= 0) return Promise.resolve(true);
-    resolvedPaths.push(href.href);
+  analyzePage(page, fromUrl, resolvedPaths, loadChildren) {
+    if (resolvedPaths.indexOf(page.getUrl()) >= 0) return Promise.resolve(true);
+    resolvedPaths.push(page.getUrl());
 
-    return this.getResource(href)
-      .then((resp) => {
-        const statusCode = resp.statusCode;
+    // Perform and log the redirect
+    if (page.isRedirect()) {
+      if (!this.options.ignoreRedirect) {
+        console.log(`${chalk.bgYellow.black(page.getStatusCode())} ${page.getUrl()} ${chalk.gray(`(from ${fromUrl})`)}`);
+      }
+      const next = url.parse(url.resolve(page.getUrl(), page.getHeader('location')));
+      next.hash = page.urlInfo.hash;
+      return this.loadPage(next).then(nextPage => this.analyzePage(nextPage, fromUrl, resolvedPaths, loadChildren));
+    }
 
-        // Perform and log the redirect
-        if (statusCode >= 300 && statusCode < 400) {
-          if (!this.options.ignoreRedirect) {
-            console.log(`${chalk.bgYellow.black(statusCode)} ${href.href} ${chalk.gray(`(from ${from})`)}`);
-          }
-          const next = url.parse(url.resolve(href.href, resp.headers.location));
-          return this.analyzeURL(next, from, resolvedPaths, loadChildren);
-        }
+    // Log the client error
+    if (page.isClientError()) {
+      if (!this.options.ignoreClient) {
+        console.log(`${chalk.bgRed.white(page.getStatusCode())} ${page.getUrl()} ${chalk.gray(`(from ${fromUrl})`)}`);
+      }
+      return Promise.resolve(false);
+    }
 
-        // Log the client error
-        if (statusCode >= 400 && statusCode < 500) {
-          if (!this.options.ignoreClient) {
-            console.log(`${chalk.bgRed.white(statusCode)} ${href.href} ${chalk.gray(`(from ${from})`)}`);
-          }
-          return false;
-        }
+    // Log the server error
+    if (page.isServerError()) {
+      if (!this.options.ignoreServer) {
+        console.log(`${chalk.bgBlack.red(page.getStatusCode())} ${page.getUrl()} ${chalk.gray(`(from ${fromUrl})`)}`);
+      }
+      return Promise.resolve(false);
+    }
 
-        // Log the server error
-        if (statusCode >= 500 && statusCode < 600) {
-          if (!this.options.ignoreServer) {
-            console.log(`${chalk.bgBlack.red(statusCode)} ${href.href} ${chalk.gray(`(from ${from})`)}`);
-          }
-          return false;
-        }
+    // Log the success
+    if (this.options.verbose) {
+      console.log(`${chalk.bgGreen.black(page.getStatusCode())} ${page.getUrl()} ${chalk.gray(`(from ${fromUrl})`)}`);
+    }
 
-        // Log the success
-        if (this.options.verbose) {
-          console.log(`${chalk.bgGreen.black(statusCode)} ${href.href} ${chalk.gray(`(from ${from})`)}`);
-        }
+    // Stop here if no children should be loaded
+    if (!loadChildren) return Promise.resolve(true);
 
-        // Stop here if no children should be loaded
-        if (!loadChildren) return true;
+    const p = [];
+    for (const link of page.getOutgoingLinks()) {
+      const isInternal = link.host === page.urlInfo.host;
+      if (isInternal || !this.options.internal) {
+        p.push(this.loadPage(link).then((outgoingPage) => {
+            return this.analyzePage(outgoingPage, page.getPathname(), resolvedPaths, isInternal);
+        }).catch(() => true));
+      }
+    }
 
-        const dom = new JSDOM(resp.body);
-        const anchors = dom.window.document.querySelectorAll('a[href]');
-
-        const p = [];
-        for (const anchor of anchors) {
-          const next = url.parse(url.resolve(href.href, anchor.href));
-          // Not an HTTP resource?
-          if (next.protocol === null || !next.protocol.match(/^https?:$/)) continue;
-
-          const isInternal = next.host === href.host;
-          if (isInternal || !this.options.internal) {
-            p.push(this.analyzeURL(next, href.pathname, resolvedPaths, isInternal));
-          }
-        }
-
-        return Promise.all(p).then(booleans => booleans.every(bool => bool));
-      })
-      .catch(() => {
-        return true;
-      });
+    return Promise.all(p).then(booleans => booleans.every(bool => bool));
   }
 
   /**
-   * @param {{ href: string, host: string, pathname: string }} href
-   * @return {Promise<http.IncomingMessage>}
+   * @param {Url} urlInfo
+   * @return {Promise<Page>}
    */
-  getResource(href) {
+  loadPage(urlInfo) {
+    const reqUrl = this.getCanonicalUrl(urlInfo);
+    if (!this.pages.has(reqUrl)) {
+      this.pages.set(reqUrl, this.createPageRequest(urlInfo));
+    }
+
+    return this.pages.get(reqUrl);
+  }
+
+  /**
+   * @param {Url} urlInfo
+   * @return {Promise}
+   */
+  createPageRequest(urlInfo) {
+    const reqUrl = this.getCanonicalUrl(urlInfo);
     return new Promise((resolve, reject) => {
       request({
-        url: href.href,
+        url: reqUrl,
         followRedirect: false,
         gzip: true,
         headers: {
@@ -126,9 +132,17 @@ class Spiderette {
           return reject(new Error('Wrong Content-Type: ' + contentType));
         }
 
-        resolve(resp);
+        resolve(new Page(urlInfo, resp));
       });
     });
+  }
+
+  /**
+   * @param {Url} urlInfo
+   * @return {string}
+   */
+  getCanonicalUrl(urlInfo) {
+    return `${urlInfo.protocol}//${urlInfo.host}${urlInfo.pathname}`;
   }
 }
 
