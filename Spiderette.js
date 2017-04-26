@@ -23,60 +23,134 @@ class Spiderette {
   runURL(href) {
     const urlInfo = url.parse(href);
     const { host, pathname } = urlInfo;
-    console.log(`${chalk.yellow('Host:')}       ${host}`);
-    console.log(`${chalk.yellow('Start Path:')} ${pathname}`);
+    process.stderr.write(`${chalk.yellow('Host:')}          ${host}\n`);
+    process.stderr.write(`${chalk.yellow('Start Path:')}    ${pathname}\n`);
 
+    let exitCode;
     return this.loadPage(urlInfo)
       .then((page) => {
-        return this.analyzePage(page, null, [], true);
+        return this.analyzePage(page, [], true);
       })
       .then((ok) => {
-        process.exit(ok ? 0 : 1);
+        exitCode = ok ? 0 : 1;
+        // Resolve all pages
+        return Promise.all([...this.pages.values()].map(p => p.catch(() => null))).then(a => a.filter(b => b));
+      })
+      .then((pages) => {
+        // Do some logging
+        process.stderr.write(`${chalk.yellow('Pages:')}         ${pages.length}\n`);
+        const successful = pages.filter(page => page.isSuccess());
+        process.stderr.write(`${chalk.yellow('Success:')}       ${successful.length} (${100 * successful.length / pages.length} %)\n`);
+        const server = pages.filter(page => page.isServerError());
+        process.stderr.write(`${chalk.yellow('Server Errors:')} ${server.length}\n`);
+        const clients = pages.filter(page => page.isClientError());
+        process.stderr.write(`${chalk.yellow('Client Errors:')} ${clients.length}\n`);
+        const redirects = pages.filter(page => page.isRedirect());
+        process.stderr.write(`${chalk.yellow('Redirects:')}     ${redirects.length}\n`);
+
+        // Create and output a text report
+        const report = this.createReport(pages);
+        for (const [outgoingPages, incomingPages] of report) {
+          for (const page of outgoingPages) {
+            process.stdout.write(`${chalk.gray('<-')} ${page.log()}\n`);
+          }
+          for (const page of incomingPages) {
+            process.stdout.write(`${chalk.gray('->')} ${page.log()}\n`);
+          }
+          process.stdout.write('\n');
+        }
+
+        process.exit(exitCode);
       });
+  }
+
+  /**
+   * Creates the page index
+   *
+   * @param {Page[]} allPages
+   * @return {Map<Page[], Page[]>}
+   */
+  createReport(allPages) {
+    const pageIndex = [];
+    for (const page of allPages) {
+      if (page) {
+        this.indexPage(page, pageIndex);
+      }
+    }
+
+    return new Map(pageIndex.sort((a, b) => b[0].length - a[0].length));
+  }
+
+  /**
+   * Indexes a page
+   *
+   * @param {Page} page
+   * @param {Array<Page[], Page[]>} pageIndex
+   * @return {boolean}
+   */
+  indexPage(page, pageIndex) {
+    if (page.isRedirect() && this.options.ignoreRedirect) {
+      return false;
+    }
+
+    if (page.isClientError() && this.options.ignoreClient) {
+      return false;
+    }
+
+    if (page.isServerError() && this.options.ignoreServer) {
+      return false;
+    }
+
+    if (page.isSuccess() && !this.options.verbose) {
+      return false;
+    }
+
+    const incoming = page.incomingPages.sort((a, b) => a.getUrl().localeCompare(b.getUrl())).filter((item, pos, self) => {
+      return self.indexOf(item) === pos;
+    });
+
+    let added = false;
+    for (const [key, items] of pageIndex) {
+      if (this.arraysEqual(key, incoming)) {
+        items.push(page);
+        added = true;
+        break;
+      }
+    }
+
+    if (!added) {
+      pageIndex.push([incoming, [page]]);
+    }
+
+    return true;
   }
 
   /**
    * Runs the test on an URL
    *
    * @param {Page} page
-   * @param {string|null} fromUrl
    * @param {string[]} resolvedPaths
    * @param {boolean} loadChildren
    * @return {Promise<boolean>}
    */
-  analyzePage(page, fromUrl, resolvedPaths, loadChildren) {
+  analyzePage(page, resolvedPaths, loadChildren) {
     if (resolvedPaths.indexOf(page.getUrl()) >= 0) return Promise.resolve(true);
     resolvedPaths.push(page.getUrl());
 
     // Perform and log the redirect
     if (page.isRedirect()) {
-      if (!this.options.ignoreRedirect) {
-        console.log(`${chalk.bgYellow.black(page.getStatusCode())} ${page.getUrl()} ${chalk.gray(`(from ${fromUrl})`)}`);
-      }
       const next = url.parse(url.resolve(page.getUrl(), page.getHeader('location')));
       next.hash = page.urlInfo.hash;
-      return this.loadPage(next).then(nextPage => this.analyzePage(nextPage, fromUrl, resolvedPaths, loadChildren));
+      return this.loadPage(next).then((nextPage) => {
+        page.addOutgoingPage(nextPage);
+        nextPage.addIncomingPage(page);
+        return this.analyzePage(nextPage, resolvedPaths, loadChildren)
+      });
     }
 
     // Log the client error
-    if (page.isClientError()) {
-      if (!this.options.ignoreClient) {
-        console.log(`${chalk.bgRed.white(page.getStatusCode())} ${page.getUrl()} ${chalk.gray(`(from ${fromUrl})`)}`);
-      }
+    if (page.isClientError() || page.isServerError()) {
       return Promise.resolve(false);
-    }
-
-    // Log the server error
-    if (page.isServerError()) {
-      if (!this.options.ignoreServer) {
-        console.log(`${chalk.bgBlack.red(page.getStatusCode())} ${page.getUrl()} ${chalk.gray(`(from ${fromUrl})`)}`);
-      }
-      return Promise.resolve(false);
-    }
-
-    // Log the success
-    if (this.options.verbose) {
-      console.log(`${chalk.bgGreen.black(page.getStatusCode())} ${page.getUrl()} ${chalk.gray(`(from ${fromUrl})`)}`);
     }
 
     // Stop here if no children should be loaded
@@ -87,7 +161,9 @@ class Spiderette {
       const isInternal = link.host === page.urlInfo.host;
       if (isInternal || !this.options.internal) {
         p.push(this.loadPage(link).then((outgoingPage) => {
-            return this.analyzePage(outgoingPage, page.getPathname(), resolvedPaths, isInternal);
+          page.addOutgoingPage(outgoingPage);
+          outgoingPage.addIncomingPage(page);
+          return this.analyzePage(outgoingPage, resolvedPaths, isInternal);
         }).catch(() => true));
       }
     }
@@ -127,11 +203,6 @@ class Spiderette {
           return reject(err);
         }
 
-        const contentType = resp.headers['content-type'] || 'text/html';
-        if (!contentType.match(/^text\/html/)) {
-          return reject(new Error('Wrong Content-Type: ' + contentType));
-        }
-
         resolve(new Page(urlInfo, resp));
       });
     });
@@ -143,6 +214,24 @@ class Spiderette {
    */
   getCanonicalUrl(urlInfo) {
     return `${urlInfo.protocol}//${urlInfo.host}${urlInfo.pathname}`;
+  }
+
+  /**
+   * @param {string[]} a
+   * @param {string[]} b
+   * @return {boolean}
+   */
+  arraysEqual(a, b) {
+    if (a === b) return true;
+    if (a === null || b === null) return false;
+    if (a.length !== b.length) return false;
+
+    a.sort();
+
+    for (let i = 0; i < a.length; ++i) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
   }
 }
 
