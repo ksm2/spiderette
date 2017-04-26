@@ -1,6 +1,6 @@
 {
   "name": "spiderette",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "A spider test runner for your website",
   "main": "index.js",
   "bin": {
